@@ -3,13 +3,14 @@ import numpy as np
 import pydot
 from IPython.display import SVG, display
 from manipulation import running_as_notebook, FindResource
-from pydrake.all import (BasicVector, ConstantVectorSource, DiagramBuilder,
+from pydrake.all import (BasicVector, RollPitchYaw, ConstantVectorSource, DiagramBuilder,
                          GenerateHtml, Integrator, JacobianWrtVariable,
                          LeafSystem, MathematicalProgram, MeshcatVisualizer,
                          Simulator, SnoptSolver, Solve, StartMeshcat, eq, ge,
                          le, RigidTransform, RenderCameraCore, CameraInfo, ClippingRange, DepthRange)
 from directives import robot_directives
 from utils.utils import MakeManipulationStationCustom
+from utils.add_bodies import add_boxes, BOX_SIZE
 
 meshcat = StartMeshcat()
 
@@ -59,8 +60,25 @@ def BuildAndSimulate(diffik_fun, V_d, plot_system_diagram=False):
     builder = DiagramBuilder()
     time_step = 4e-3
     station = builder.AddSystem(
-        MakeManipulationStationCustom(robot_directives, time_step=time_step))
+        MakeManipulationStationCustom(model_directives=robot_directives, prefinalize_callback=add_boxes))
     plant = station.GetSubsystemByName("plant")
+    plant_context = plant.CreateDefaultContext()
+
+    table_frame = plant.GetFrameByName("top_center")
+
+    X_WorldTable = table_frame.CalcPoseInWorld(plant_context)
+
+    box_1 = plant.GetBodyByName("box_1")
+    X_TableBox1 = RigidTransform(
+        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, -BOX_SIZE[1] / 2, BOX_SIZE[2] / 2])
+    X_WorldBox1 = X_WorldTable.multiply(X_TableBox1)
+    plant.SetDefaultFreeBodyPose(box_1, X_WorldBox1)
+
+    box_2 = plant.GetBodyByName("box_2")
+    X_TableBox2 = RigidTransform(
+        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, BOX_SIZE[1] / 2, BOX_SIZE[2] / 2])
+    X_WorldBox2 = X_WorldTable.multiply(X_TableBox2)
+    plant.SetDefaultFreeBodyPose(box_2, X_WorldBox2)
 
     controller = builder.AddSystem(DifferentialIKSystem(plant, diffik_fun))
     integrator = builder.AddSystem(Integrator(7))

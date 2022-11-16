@@ -33,18 +33,6 @@ directives:
         translation: [0, 0, -0.05]
         rotation: !Rpy {{deg: [0, 0, 90]}}
 - add_model:
-    name: foam_brick_1
-    file: package://drake/examples/manipulation_station/models/061_foam_brick.sdf
-    default_free_body_pose:
-        base_link:
-            translation: [0.9, -0.025, 0.7645]
-- add_model:
-    name: foam_brick_2
-    file: package://drake/examples/manipulation_station/models/061_foam_brick.sdf
-    default_free_body_pose:
-        base_link:
-            translation: [0.8, 0.025, 0.7645]
-- add_model:
     name: work_table
     file: package://drake/examples/kuka_iiwa_arm/models/table/extra_heavy_duty_table_surface_only_collision.sdf
 - add_weld:
