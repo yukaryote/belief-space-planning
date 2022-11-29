@@ -5,6 +5,8 @@ from pydrake.all import (
 )
 
 from pydrake.symbolic import Variable
+from histogram_filter import histogram_filter
+from scipy.special import kl_div
 
 
 def dirtran(x_samples, T, x_g=None, alpha=0.0085):
@@ -81,6 +83,10 @@ def theta(belief_state, r, x_g):
     return 0
 
 
+def J(x_samples, u, t):
+    return np.mean([calc_weights(x_samples[0], k, x_samples, u, t) ** 2 for k in range(len(x_samples))])
+
+
 def create_plan(belief_state, x_samples, x_g, T, omega=0.5, r=0.5):
     u = dirtran(x_samples, T, x_g=x_g)
     # TODO: update belief state
@@ -90,7 +96,7 @@ def create_plan(belief_state, x_samples, x_g, T, omega=0.5, r=0.5):
     return belief_state, u
 
 
-def re_plan(belief_state, x_g, T, G, omega=0.5, r=0.5, K=15, thresh=0.25):
+def re_plan(belief_state, x_g, T, G, omega=0.5, r=0.5, K=15, thresh=0.25, kl_thresh=0.5, rho=0.5):
     while theta(belief_state, r, x_g) <= omega:
         x_samples = [np.argmax(belief_state)]
         k = 1
@@ -105,3 +111,7 @@ def re_plan(belief_state, x_g, T, G, omega=0.5, r=0.5, K=15, thresh=0.25):
             # TODO execute action u_t, perceive observation z_{t+1}
             u_t = None
             z_next = None
+            belief_state = G(belief_state, u_t, z_next)
+            if kl_div(belief_state, belief_state) > kl_thresh and J(x_samples, u, t) < 1 - rho:
+                break
+        # TODO update belief state
