@@ -9,7 +9,7 @@ from pydrake.all import (BasicVector, RollPitchYaw, ConstantVectorSource, Diagra
                          Simulator, SnoptSolver, Solve, StartMeshcat, eq, ge,
                          le, RigidTransform, RenderCameraCore, CameraInfo, ClippingRange, DepthRange)
 from directives import robot_directives
-from utils.utils import MakeManipulationStationCustom
+from utils.make_station import MakeManipulationStationCustom
 from utils.add_bodies import add_boxes, BOX_SIZE
 
 meshcat = StartMeshcat()
