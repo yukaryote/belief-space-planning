@@ -22,7 +22,7 @@ class DifferentialIKSystem(LeafSystem):
                diffik_fun(J_G, V_G_desired, q_now, v_now, X_now)
     """
 
-    def __init__(self, plant, diffik_fun):
+    def __init__(self, plant, diffik_fun, lower_bound=None, upper_bound=None):
         LeafSystem.__init__(self)
         self._plant = plant
         self._plant_context = plant.CreateDefaultContext()
@@ -30,6 +30,8 @@ class DifferentialIKSystem(LeafSystem):
         self._G = plant.GetBodyByName("body").body_frame()
         self._W = plant.world_frame()
         self._diffik_fun = diffik_fun
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
 
         self.DeclareVectorInputPort("spatial_velocity", BasicVector(6))
         self.DeclareVectorInputPort("iiwa_position_measured", BasicVector(7))
@@ -51,14 +53,43 @@ class DifferentialIKSystem(LeafSystem):
         X_now = self._plant.CalcRelativeTransform(self._plant_context,
                                                   self._W, self._G)
         p_now = X_now.translation()
-
-        v = self._diffik_fun(J_G, V_G_desired, q_now, v_now, p_now)
+        if self._diffik_fun == "zeros":
+            v = self.DiffIK_Zero()
+        else:
+            v = self.DiffIKQP_Wall(J_G, V_G_desired, q_now, v_now, p_now)
         output.SetFromVector(v)
 
+    def DiffIK_Zero(self):
+        return np.zeros(7)
 
-def BuildAndSimulate(diffik_fun, V_d, plot_system_diagram=False):
+    def DiffIKQP_Wall(self, J_G, V_G_desired, q_now, v_now, p_now):
+        prog = MathematicalProgram()
+        v = prog.NewContinuousVariables(7, 'joint_velocities')
+        v_max = 3.0
+        h = 4e-3
+
+        sub = J_G.dot(v) - V_G_desired
+        expr = 0
+        for i in sub:
+            expr += pow(i, 2)
+        prog.AddCost(expr)
+        prog.AddConstraint(le(v, v_max * np.ones(7)))
+        prog.AddConstraint(ge(v, -v_max * np.ones(7)))
+        prog.AddConstraint(ge(J_G.dot(v)[3:], (self.lower_bound - p_now) / h))
+        prog.AddConstraint(le(J_G.dot(v)[3:], (self.upper_bound - p_now) / h))
+
+        solver = SnoptSolver()
+        result = solver.Solve(prog)
+
+        if not (result.is_success()):
+            raise ValueError("Could not find the optimal solution.")
+
+        v_solution = result.GetSolution(v)
+        return v_solution
+
+
+def BuildAndSimulate(diffik_fun, V_d):
     builder = DiagramBuilder()
-    time_step = 4e-3
     station = builder.AddSystem(
         MakeManipulationStationCustom(model_directives=robot_directives, prefinalize_callback=add_boxes))
     plant = station.GetSubsystemByName("plant")
@@ -68,19 +99,32 @@ def BuildAndSimulate(diffik_fun, V_d, plot_system_diagram=False):
 
     X_WorldTable = table_frame.CalcPoseInWorld(plant_context)
 
+    # size of gap between the boxes
+    gap = 0.3
     box_1 = plant.GetBodyByName("box_1")
     X_TableBox1 = RigidTransform(
-        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, -BOX_SIZE[1] / 2, BOX_SIZE[2] / 2])
+        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, -BOX_SIZE[1] / 2 - gap / 2, BOX_SIZE[2] / 2])
     X_WorldBox1 = X_WorldTable.multiply(X_TableBox1)
     plant.SetDefaultFreeBodyPose(box_1, X_WorldBox1)
 
     box_2 = plant.GetBodyByName("box_2")
     X_TableBox2 = RigidTransform(
-        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, BOX_SIZE[1] / 2, BOX_SIZE[2] / 2])
+        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, BOX_SIZE[1] / 2 + gap / 2, BOX_SIZE[2] / 2])
     X_WorldBox2 = X_WorldTable.multiply(X_TableBox2)
     plant.SetDefaultFreeBodyPose(box_2, X_WorldBox2)
 
-    controller = builder.AddSystem(DifferentialIKSystem(plant, diffik_fun))
+    # constrain the robot to move in the y direction
+    box1_pos = X_WorldBox1.translation()
+    box2_pos = X_WorldBox2.translation()
+    y_min = box1_pos[1] - BOX_SIZE[1] / 2
+    y_max = box2_pos[1] + BOX_SIZE[1] / 2
+    lower_bound = []
+    upper_bound = []
+
+    controller = builder.AddSystem(DifferentialIKSystem(plant,
+                                                        diffik_fun,
+                                                        lower_bound=lower_bound,
+                                                        upper_bound=upper_bound))
     integrator = builder.AddSystem(Integrator(7))
     desired_vel = builder.AddSystem(ConstantVectorSource(V_d))
 
@@ -100,8 +144,6 @@ def BuildAndSimulate(diffik_fun, V_d, plot_system_diagram=False):
 
     diagram = builder.Build()
     diagram.set_name("diagram")
-    if running_as_notebook and plot_system_diagram:
-        display(SVG(pydot.graph_from_dot_data(diagram.GetGraphvizString())[0].create_svg()))
 
     simulator = Simulator(diagram)
     context = simulator.get_mutable_context()
@@ -126,43 +168,7 @@ def BuildAndSimulate(diffik_fun, V_d, plot_system_diagram=False):
     return simulator
 
 
-def DiffIK_Zero(J_G, V_G_desired, q_now, v_now, p_now):
-    return np.zeros(7)
-
-
-def DiffIKQP_Wall(J_G, V_G_desired, q_now, v_now, p_now):
-    prog = MathematicalProgram()
-    v = prog.NewContinuousVariables(7, 'joint_velocities')
-    v_max = 3.0  # do not modify
-    h = 4e-3  # do not modify
-    lower_bound = np.array([-0.3, -1.0, -1.0])  # do not modify
-    upper_bound = np.array([0.3, 1.0, 1.0])  # do not modify
-
-    end_vels = V_G_desired[3:]
-    print(lower_bound - h * end_vels, type(end_vels), type(p_now))
-
-    # Fill in your code here.
-    sub = J_G.dot(v) - V_G_desired
-    expr = 0
-    for i in sub:
-        expr += pow(i, 2)
-    prog.AddCost(expr)
-    prog.AddConstraint(le(v, v_max * np.ones(7)))
-    prog.AddConstraint(ge(v, -v_max * np.ones(7)))
-    prog.AddConstraint(ge(J_G.dot(v)[3:], (lower_bound - p_now) / h))
-    prog.AddConstraint(le(J_G.dot(v)[3:], (upper_bound - p_now) / h))
-
-    solver = SnoptSolver()
-    result = solver.Solve(prog)
-
-    if not (result.is_success()):
-        raise ValueError("Could not find the optimal solution.")
-
-    v_solution = result.GetSolution(v)
-    return v_solution
-
-
 V_d = np.zeros(6)
-simulator = BuildAndSimulate(DiffIK_Zero, V_d)
+simulator = BuildAndSimulate("zeros", V_d)
 
 simulator.AdvanceTo(5.0 if running_as_notebook else 0.1)
