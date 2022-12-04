@@ -1,67 +1,64 @@
-def histogram_filter(p, field, measurement, motion, sensorTrust, actionTrust):
-    """
-    Histogram filter implementation for SLAG.
-    Use 20,000 bins: 20 bins for x_r * 10 bins for x_l * 10 bins for y_l * 10 bins for x_theta
-    move function takes in robot arm motion, returns p_bar for all bins
-    sense function takes in the beam measurement, returns p for all bins (final probability of some bin being true)
-    """
-    def normalizer(q, sum, colsNumber):
-        normalized = []
-        row = []
-        for i in range(len(q)):
-            q[i] = q[i] / sum
-            row.append(q[i])
-            if (i + 1) % colsNumber == 0:
-                normalized.append(row)
-                row = []
-        return normalized
+import numpy as np
+import scipy.stats as stats
 
-    def move(p, motion, trust):
-        q = []
-        for row in range(len(p)):
-            for col in range(len(p[row])):
-                s = p[(row - motion[0]) % len(p)][(col - motion[1]) % len(p[row])] * trust
-                s += p[row % len(p)][col % len(p[row])] * (1 - trust)
-                q.append(s)
 
-        s = sum(q)
-        q = normalizer(q, s, len(p[0]))
+class HistogramFilter:
+    """
+    Histogram filter with N bins. Call this at each time step.
+    p (N, 1) is initially uniform across all states.
+    move function takes in robot arm motion (y-axis value), returns p_bar for all bins
+    sense function takes in the beam measurement (cm), returns p for all bins (final probability of some bin being true)
+    """
+    def __init__(self, N, field, noise_std):
+        self.N = N
+        self.p = np.ones((N,)) / N
+        self.field = field
+        self.bin_size = int(len(self.field) / N)
+        self.noise_std = noise_std
+
+    def calc_p_obs(self, x_idx, measurement):
+        """
+        field is an N-d array of distances, where N is the number of bins in the histogram filter.
+        measurement is the measurement collected from the laser sensor (cm) with Gaussian noise.
+        Returns p(measurement | state = x).
+        """
+        x_min = self.field[x_idx] - self.bin_size / 2
+        x_max = self.field[x_idx] + self.bin_size / 2
+        p_min = stats.norm.cdf(x_min, measurement, scale=self.noise_std)
+        p_max = stats.norm.cdf(x_max, measurement, scale=self.noise_std)
+
+        return p_max - p_min
+
+    def move(self, motion):
+        """
+        Updates p according to robot end effector movement.
+        motion is the amount (cm) in the y-axis that the robot moved. We assume no motion noise.
+        Returns p_bar
+        """
+        q = np.zeros_like(self.p)
+        for x in range(len(self.p)):
+            # we're assuming no motion, noise, so we don't sum over all possible states, just the previous one.
+            s = self.p[x + motion] * self.p[x]
+            q[x] = s
+
+        q = q / np.linalg.norm(q)
         return q
 
-    def sense(p, measurement, trust):
-        q = []
+    def sense(self, measurement):
+        """
+        Updates p according to measurement (the laser beam reading at time t).
+        p(measurement | state = x_t) is given by function calc_p_obs
+        """
+        q = np.zeros_like(self.p)
 
-        def xor(measurement, field, pZGivenX, fieldRow, fieldCol):
-            outValue = 'B'
-            for row in range(len(measurement)):
-                for col in range(len(measurement[0])):
-                    outscenario = (row - int(len(measurement) / 2)) + fieldRow < 0 or (
-                                col - int(len(measurement[0]) / 2)) + fieldCol < 0 or (
-                                              row - int(len(measurement) / 2)) + fieldRow >= B or (
-                                              col - int(len(measurement[0]) / 2)) + fieldCol >= A
-                    if outscenario:
-                        if measurement[row][col] == outValue:
-                            pZGivenX *= trust
-                        else:
-                            pZGivenX *= (1 - trust)
+        for x in range(len(self.p)):
+            pZGivenX = self.calc_p_obs(x, measurement)
+            q[x] = self.p[x] * pZGivenX
 
-                    elif measurement[row][col] == field[fieldRow + row - int(len(measurement) / 2)][
-                        fieldCol + col - int(len(measurement[0]) / 2)]:
-                        pZGivenX *= trust
-                    else:
-                        pZGivenX *= (1 - trust)
-
-            return pZGivenX
-
-        for row in range(len(p)):
-            for col in range(len(p[0])):
-                pZGivenX = xor(measurement, field, 1, row, col)
-                q.append(p[row][col] * pZGivenX)
-
-        s = sum(q)
-        q = normalizer(q, s, len(p[0]))
+        q = q / np.linalg.norm(q)
         return q
 
-    p = move(p, motion, actionTrust)
-    p = sense(p, measurement, sensorTrust)
-    return p
+    def update(self, motion, measurement):
+        self.p = self.move(motion)
+        self.p = self.sense(measurement)
+        return self.p

@@ -130,7 +130,39 @@ def DiffIK_Zero(J_G, V_G_desired, q_now, v_now, p_now):
     return np.zeros(7)
 
 
+def DiffIKQP_Wall(J_G, V_G_desired, q_now, v_now, p_now):
+    prog = MathematicalProgram()
+    v = prog.NewContinuousVariables(7, 'joint_velocities')
+    v_max = 3.0  # do not modify
+    h = 4e-3  # do not modify
+    lower_bound = np.array([-0.3, -1.0, -1.0])  # do not modify
+    upper_bound = np.array([0.3, 1.0, 1.0])  # do not modify
+
+    end_vels = V_G_desired[3:]
+    print(lower_bound - h * end_vels, type(end_vels), type(p_now))
+
+    # Fill in your code here.
+    sub = J_G.dot(v) - V_G_desired
+    expr = 0
+    for i in sub:
+        expr += pow(i, 2)
+    prog.AddCost(expr)
+    prog.AddConstraint(le(v, v_max * np.ones(7)))
+    prog.AddConstraint(ge(v, -v_max * np.ones(7)))
+    prog.AddConstraint(ge(J_G.dot(v)[3:], (lower_bound - p_now) / h))
+    prog.AddConstraint(le(J_G.dot(v)[3:], (upper_bound - p_now) / h))
+
+    solver = SnoptSolver()
+    result = solver.Solve(prog)
+
+    if not (result.is_success()):
+        raise ValueError("Could not find the optimal solution.")
+
+    v_solution = result.GetSolution(v)
+    return v_solution
+
+
 V_d = np.zeros(6)
-simulator = BuildAndSimulate(DiffIK_Zero, V_d, plot_system_diagram=True)
+simulator = BuildAndSimulate(DiffIK_Zero, V_d)
 
 simulator.AdvanceTo(5.0 if running_as_notebook else 0.1)
