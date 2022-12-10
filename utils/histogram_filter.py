@@ -10,8 +10,11 @@ class HistogramFilter:
     sense function takes in the beam measurement (cm), returns p for all bins (final probability of some bin being true)
     """
     def __init__(self, N, field, noise_std):
+        # N is the number of pins
         self.N = N
+        # p is the probability distribution over the N bins
         self.p = np.ones((N,)) / N
+        # field is the
         self.field = field
         self.bin_size = int(len(self.field) / N)
         self.noise_std = noise_std
@@ -50,7 +53,6 @@ class HistogramFilter:
         p(measurement | state = x_t) is given by function calc_p_obs
         """
         q = np.zeros_like(self.p)
-
         for x in range(len(self.p)):
             pZGivenX = self.calc_p_obs(x, measurement)
             q[x] = self.p[x] * pZGivenX

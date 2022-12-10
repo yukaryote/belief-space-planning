@@ -1,5 +1,8 @@
-import os
+import sys
 import numpy as np
+
+np.set_printoptions(threshold=sys.maxsize)
+
 import pydot
 from IPython.display import SVG, display
 from manipulation import running_as_notebook, FindResource
@@ -10,7 +13,8 @@ from pydrake.all import (BasicVector, RollPitchYaw, ConstantVectorSource, Diagra
                          le, RigidTransform, RenderCameraCore, CameraInfo, ClippingRange, DepthRange)
 from directives import robot_directives
 from utils.make_station import MakeManipulationStationCustom
-from utils.add_bodies import add_boxes, BOX_SIZE
+from utils.add_bodies import add_boxes, BOX_SIZE, WALL_SIZE
+from utils.sqp import SolveSQP
 
 meshcat = StartMeshcat()
 
@@ -55,6 +59,8 @@ class DifferentialIKSystem(LeafSystem):
         p_now = X_now.translation()
         if self._diffik_fun == "zeros":
             v = self.DiffIK_Zero()
+        elif self._diffik_fun == "pseudoinv":
+            v = self.DiffIKPseudoInverse(J_G, V_G_desired, q_now, v_now, p_now)
         else:
             v = self.DiffIKQP_Wall(J_G, V_G_desired, q_now, v_now, p_now)
         output.SetFromVector(v)
@@ -62,10 +68,14 @@ class DifferentialIKSystem(LeafSystem):
     def DiffIK_Zero(self):
         return np.zeros(7)
 
+    def DiffIKPseudoInverse(self, J_G, V_G_desired, q_now, v_now, p_now):
+        v = np.linalg.pinv(J_G).dot(V_G_desired)
+        return v
+
     def DiffIKQP_Wall(self, J_G, V_G_desired, q_now, v_now, p_now):
         prog = MathematicalProgram()
         v = prog.NewContinuousVariables(7, 'joint_velocities')
-        v_max = 3.0
+        v_max = 4.0
         h = 4e-3
 
         sub = J_G.dot(v) - V_G_desired
@@ -100,7 +110,7 @@ def BuildAndSimulate(diffik_fun, V_d):
     X_WorldTable = table_frame.CalcPoseInWorld(plant_context)
 
     # size of gap between the boxes
-    gap = 0.3
+    gap = 0.05
     box_1 = plant.GetBodyByName("box_1")
     X_TableBox1 = RigidTransform(
         RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[-0.2, -BOX_SIZE[1] / 2 - gap / 2, BOX_SIZE[2] / 2])
@@ -113,13 +123,19 @@ def BuildAndSimulate(diffik_fun, V_d):
     X_WorldBox2 = X_WorldTable.multiply(X_TableBox2)
     plant.SetDefaultFreeBodyPose(box_2, X_WorldBox2)
 
+    wall = plant.GetBodyByName("wall")
+    X_TableWall = RigidTransform(
+        RollPitchYaw(np.asarray([0, 0, 0]) * np.pi / 180), p=[0, 0, WALL_SIZE[2] / 2])
+    X_WorldWall = X_WorldTable.multiply(X_TableWall)
+    plant.SetDefaultFreeBodyPose(wall, X_WorldWall)
+
     # constrain the robot to move in the y direction
-    box1_pos = X_WorldBox1.translation()
-    box2_pos = X_WorldBox2.translation()
-    y_min = box1_pos[1] - BOX_SIZE[1] / 2
-    y_max = box2_pos[1] + BOX_SIZE[1] / 2
-    lower_bound = []
-    upper_bound = []
+    box1_y = X_WorldBox1.translation()[1]
+    box2_y = X_WorldBox2.translation()[1]
+    y_min = box1_y - BOX_SIZE[1] / 2
+    y_max = box2_y + BOX_SIZE[1] / 2
+    lower_bound = [-100, y_min, -100]
+    upper_bound = [100, y_max, 100]
 
     controller = builder.AddSystem(DifferentialIKSystem(plant,
                                                         diffik_fun,
@@ -157,18 +173,21 @@ def BuildAndSimulate(diffik_fun, V_d):
         integrator.GetMyMutableContextFromRoot(context),
         plant.GetPositions(plant.GetMyContextFromRoot(context),
                            plant.GetModelInstanceByName("iiwa")))
+    laser_img = station.GetOutputPort("camera_depth_image").Eval(station_context).data.squeeze()
+    middle = laser_img.shape[1] // 2
+    print(laser_img[0][middle], laser_img.shape)
+
+    # SQPsolver = SolveSQP(500, 0.0085, 10, )
 
     simulator.set_target_realtime_rate(1.0)
-    simulator.AdvanceTo(0.01)
-
-    time = 0
-    while True:
-        time += 1
-
     return simulator
 
 
-V_d = np.zeros(6)
-simulator = BuildAndSimulate("zeros", V_d)
+# Corresponds to [wx, wy, wz, vx, vy, vz]
+V_d = np.array([0., 0., 0., 0.0, 0.1, 0])
+simulator = BuildAndSimulate("wall", V_d)
 
-simulator.AdvanceTo(5.0 if running_as_notebook else 0.1)
+i = 0.01
+while i < 5.0:
+    simulator.AdvanceTo(i)
+    i += 0.01

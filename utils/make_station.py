@@ -23,7 +23,7 @@ from manipulation.utils import AddPackagePaths, FindResource
 def AddLaserSensor(builder,
                    plant,
                    scene_graph,
-                   also_add_point_clouds=True,
+                   also_add_point_clouds=False,
                    model_instance_prefix="camera",
                    depth_camera=None,
                    renderer=None):
@@ -58,7 +58,6 @@ def AddLaserSensor(builder,
                            depth_camera=depth_camera,
                            show_window=False))
             rgbd.set_name(model_name)
-
             builder.Connect(scene_graph.get_query_output_port(),
                             rgbd.query_object_input_port())
 

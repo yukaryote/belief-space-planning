@@ -3,7 +3,8 @@ import numpy as np
 from pydrake.all import Box, RigidTransform, SpatialInertia, UnitInertia, CoulombFriction
 
 
-BOX_SIZE = [0.1, 0.1, 0.1]
+BOX_SIZE = [0.09, 0.09, 0.15]
+WALL_SIZE = [0.05, 0.75, 0.5]
 
 
 def AddBoxDifferentGeometry(plant, visual_shape, collision_shape, name, mass=1., mu=1., color=None):
@@ -34,4 +35,6 @@ def add_boxes(plant):
                             mass, mu, color=[0.8, 0, 0, 1.0])
     AddBoxDifferentGeometry(plant, Box(*BOX_SIZE), Box(*[x for x in BOX_SIZE]), "box_2",
                             mass, mu, color=[0, 0.8, 0, 1.0])
+    AddBoxDifferentGeometry(plant, Box(*WALL_SIZE), Box(*[x for x in WALL_SIZE]), "wall",
+                            mass, mu, color=[0, 0, 0.8, 1.0])
     return

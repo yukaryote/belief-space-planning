@@ -5,7 +5,7 @@ from pydrake.all import (
 )
 
 from pydrake.symbolic import Variable
-from histogram_filter import HistogramFilter
+from utils.histogram_filter import HistogramFilter
 from scipy.special import kl_div
 
 
@@ -14,6 +14,14 @@ class SolveSQP:
         self.T = T
         self.alpha = alpha
         self.h = field
+        self.H = np.zeros_like(self.h)
+        prev = self.h[0]
+        # h is a square wave, so its derivative is two impulses of opposite sign
+        for i in range(len(self.h)):
+            if prev < self.h[i]:
+                self.H[i] = 1
+            elif prev > self.h[i]:
+                self.H[i] = -1
         self.Q = np.random.normal(loc=0, scale=noise_std)
         self.histogram_filter = HistogramFilter(N, field, noise_std)
 
@@ -67,7 +75,7 @@ class SolveSQP:
         Weighting function
         """
         return 1 / 2 * (self.h[x] - self.h[y].T) @ np.linalg.inv(2 * self.Q +
-                        self.H(x) @ self.H(x).T + self.H(y) @ self.H(y).T) @ (
+                        self.H[x] @ self.H[x].T + self.H[y] @ self.H[y].T) @ (
                         self.h[x] - self.h[y])
 
     def F(self, x, u):
@@ -76,12 +84,6 @@ class SolveSQP:
     def f(self, x, u):
         """
         Returns next state if we are in state x and take action u
-        """
-        return
-
-    def H(self, x):
-        """
-        Derivative of observation with respect to state x (use Jacobian)
         """
         return
 
