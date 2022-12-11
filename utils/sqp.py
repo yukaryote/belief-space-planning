@@ -10,7 +10,7 @@ from scipy.special import kl_div
 
 
 class SolveSQP:
-    def __init__(self, T, alpha, N, field, noise_std):
+    def __init__(self, field, T=100, alpha=0.0085, N=10, noise_std=0.1):
         self.T = T
         self.alpha = alpha
         self.h = field
@@ -32,7 +32,10 @@ class SolveSQP:
         prog = MathematicalProgram()
 
         # Create decision variables
+
+        # u is 1-dim velocity in the y-axis
         u = np.empty((1, self.T - 1), dtype=Variable)
+        # x is k-dim positions in the y-axis from our k samples
         x = np.empty((1, K, self.T), dtype=Variable)
         for t in range(self.T - 1):
             u[:, t] = prog.NewContinuousVariables(1, 'u' + str(t))
@@ -78,14 +81,21 @@ class SolveSQP:
                         self.H[x] @ self.H[x].T + self.H[y] @ self.H[y].T) @ (
                         self.h[x] - self.h[y])
 
-    def F(self, x, u):
-        return
-
     def f(self, x, u):
         """
         Returns next state if we are in state x and take action u
+        0.002 is the timestep of the system
         """
-        return
+        return x + u * 0.002
+
+    def F(self, x, u):
+        """
+        Returns next state if we are in state x and take actions u (a T-dim vector of actions)
+        """
+        state = x
+        for i in range(len(u)):
+            state += self.f(state, u[i])
+        return state
 
     def theta_cap(self, belief_state, r, x_g):
         """
@@ -125,6 +135,7 @@ class SolveSQP:
             t_break = 0
             for t in range(self.T - 1):
                 u_t = u[t]
+                # take action u_t, observe z_next
                 # TODO: get z_next from MultiBody plant
                 z_next = None
                 belief_state = self.histogram_filter.update(u_t, z_next)

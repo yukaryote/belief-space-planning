@@ -2,10 +2,7 @@ import sys
 import numpy as np
 
 np.set_printoptions(threshold=sys.maxsize)
-
-import pydot
-from IPython.display import SVG, display
-from manipulation import running_as_notebook, FindResource
+from manipulation.scenarios import AddIiwaDifferentialIK
 from pydrake.all import (BasicVector, RollPitchYaw, ConstantVectorSource, DiagramBuilder,
                          GenerateHtml, Integrator, JacobianWrtVariable,
                          LeafSystem, MathematicalProgram, MeshcatVisualizer,
@@ -75,7 +72,7 @@ class DifferentialIKSystem(LeafSystem):
     def DiffIKQP_Wall(self, J_G, V_G_desired, q_now, v_now, p_now):
         prog = MathematicalProgram()
         v = prog.NewContinuousVariables(7, 'joint_velocities')
-        v_max = 4.0
+        v_max = 100
         h = 4e-3
 
         sub = J_G.dot(v) - V_G_desired
@@ -179,7 +176,7 @@ def BuildAndSimulate(diffik_fun, V_d):
 
     # SQPsolver = SolveSQP(500, 0.0085, 10, )
 
-    simulator.set_target_realtime_rate(1.0)
+    simulator.set_target_realtime_rate(400.0)
     return simulator
 
 
@@ -187,7 +184,7 @@ def BuildAndSimulate(diffik_fun, V_d):
 V_d = np.array([0., 0., 0., 0.0, 0.1, 0])
 simulator = BuildAndSimulate("wall", V_d)
 
-i = 0.01
+i = 0.002
 while i < 5.0:
     simulator.AdvanceTo(i)
-    i += 0.01
+    i += 0.002
