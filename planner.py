@@ -505,6 +505,7 @@ def clutter_clearing_demo():
 
     simulator = Simulator(diagram)
 
+    visualizer.start_recording()
     simulator.AdvanceTo(0.1)
     meshcat.Flush()  # Wait for the large object meshes to get to meshcat.
 
