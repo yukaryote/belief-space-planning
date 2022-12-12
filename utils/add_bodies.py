@@ -3,8 +3,9 @@ import numpy as np
 from pydrake.all import Box, RigidTransform, SpatialInertia, UnitInertia, CoulombFriction
 
 
-BOX_SIZE = [0.09, 0.09, 0.15]
+BOX_SIZE = [0.1, 0.1, 0.15]
 WALL_SIZE = [0.05, 0.75, 0.5]
+GAP = 0.05
 
 
 def AddBoxDifferentGeometry(plant, visual_shape, collision_shape, name, mass=1., mu=1., color=None):

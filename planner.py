@@ -7,9 +7,11 @@ from manipulation.scenarios import AddIiwaDifferentialIK
 from pydrake.all import (AbstractValue, RollPitchYaw, PiecewisePose, DiagramBuilder,
                          PiecewisePolynomial, InputPortIndex, LeafSystem, MathematicalProgram,
                          MeshcatVisualizer, Simulator, Solve, StartMeshcat, eq, ge,
-                         le, RigidTransform, PortSwitch)
+                         le, RigidTransform, RotationMatrix, PortSwitch)
 from pydrake.symbolic import Variable
 from manipulation.pick import MakeGripperFrames, MakeGripperPoseTrajectory, MakeGripperCommandTrajectory
+from pydrake.systems.sensors import ImageDepth32F
+
 from directives import robot_directives
 from utils.make_station import MakeManipulationStationCustom
 from utils.add_bodies import BOX_SIZE, WALL_SIZE
@@ -34,20 +36,19 @@ class Planner(LeafSystem):
     def __init__(self, plant, field, x_g, T=100, alpha=0.0085, N=10, noise_std=0.1, lower_bound=None, upper_bound=None):
         LeafSystem.__init__(self)
         self.time_step = plant.time_step
+        self.x_g = x_g
         self._gripper_body_index = plant.GetBodyByName("body").index()
         self.DeclareAbstractInputPort(
             "body_poses", AbstractValue.Make([RigidTransform()]))
         self._laser_observation = self.DeclareAbstractInputPort(
-            "laser_observation", AbstractValue.Make(
-                (np.inf, RigidTransform()))).get_index()
+            "laser_observation", AbstractValue.Make(AbstractValue.Make(ImageDepth32F())))
         self._wsg_state_index = self.DeclareVectorInputPort("wsg_state", 2).get_index()
 
         self._mode_index = self.DeclareAbstractState(
             AbstractValue.Make(PlannerState.WAIT_FOR_OBJECTS_TO_SETTLE))
         self._traj_X_G_index = self.DeclareAbstractState(
             AbstractValue.Make(PiecewisePose()))
-        self._traj_wsg_index = self.DeclareAbstractState(
-            AbstractValue.Make(PiecewisePolynomial()))
+        self._traj_wsg_index = self.DeclareAbstractState(AbstractValue.Make(PiecewisePolynomial()))
         self._times_index = self.DeclareAbstractState(AbstractValue.Make({"initial": 0.0}))
         self._attempts_index = self.DeclareDiscreteState(1)
 
@@ -103,7 +104,7 @@ class Planner(LeafSystem):
 
         # u is T-dim velocity in the y-axis
         u = np.empty((self.T - 1), dtype=Variable)
-        # x is kxT-dim positions in the y-axis from our k samples
+        # x is k x T-dim positions in the y-axis from our k samples
         x = np.empty((K, self.T), dtype=Variable)
         for t in range(self.T - 1):
             u[t] = prog.NewContinuousVariables(1, 'u' + str(t))
@@ -131,9 +132,10 @@ class Planner(LeafSystem):
 
         result = Solve(prog)
 
+        x_sol = result.GetSolution(x)
         u_sol = result.GetSolution(u)
         assert (result.is_success()), "Optimization failed"
-        return u_sol
+        return x_sol, u_sol
 
     def calc_weights(self, x_1, i, x_samples, u, T):
         weight = 1
@@ -179,26 +181,47 @@ class Planner(LeafSystem):
     def J(self, x_samples, u, t):
         return np.mean([self.calc_weights(x_samples[0], k, x_samples, u, t) ** 2 for k in range(len(x_samples))])
 
-    def create_plan(self, x_samples, x_g, omega=0.5, r=0.5):
+    def create_plan(self, context, x_samples, x_g, omega=0.5, r=0.5):
+        """
+        Outputs the list of states and actions calculated by the optimization problem.
+        The states will be used in calculating trajectories.
+        """
         belief_state = self.histogram_filter.p[:]
-        u = self.dirtran(x_samples, x_g=x_g)
+        x, u = self.dirtran(x_samples, x_g=x_g)
         belief_states = np.ndarray(shape=(belief_state.shape[0], self.T))
         belief_states[0] = belief_state
         for t in range(self.T - 1):
             belief_state[t + 1] = self.histogram_filter.update(u[t], self.h[x_samples[0][t]])
         if self.theta_cap(belief_state, r, x_g) <= omega:
-            u = self.dirtran(x_samples, self.T)
+            x, u = self.dirtran(x_samples, self.T)
             belief_states[0] = belief_state
             for t in range(self.T - 1):
                 belief_state[t + 1] = self.histogram_filter.update(u[t], self.h[x_samples[0][t]])
-        return belief_states, u
+        times = []
+        poses = []
+        for t in range(self.T - 1):
+            times.append(context.get_time() + t)
+            poses.append(RigidTransform(RotationMatrix.Identity(), []))
+        return belief_states, PiecewisePose.MakeLinear(times, poses)
 
     def Update(self, context, state):
+        """
+        Seems like this function executes whatever is in the output ports.
+        Plans are interrupted by mode changes in Plan() or in the function itself.
+        """
         mode = context.get_abstract_state(int(self._mode_index)).get_value()
 
         current_time = context.get_time()
         times = context.get_abstract_state(int(
             self._times_index)).get_value()
+
+        motion = context.get_abstract_state(int(self._traj_X_G_index)).Eval()
+        laser = self.get_input_port(self._laser_observation).Eval(context)
+
+        belief_state = self.histogram_filter.update(motion, laser)
+        if self.theta_cap(belief_state, 0.5, self.x_g):
+            self.GoHome(context, state)
+            return
 
         if mode == PlannerState.WAIT_FOR_OBJECTS_TO_SETTLE:
             if context.get_time() - times["initial"] > 1.0:
@@ -211,42 +234,8 @@ class Planner(LeafSystem):
                 self.Plan(context, state)
             return
 
-        # If we are between pick and place and the gripper is closed, then
-        # we've missed or dropped the object. Time to replan.
-        if times["postpick"] < current_time < times["preplace"]:
-            wsg_state = self.get_input_port(self._wsg_state_index).Eval(context)
-            if wsg_state[0] < 0.01:
-                attempts = state.get_mutable_discrete_state(int(self._attempts_index)).get_mutable_value()
-                if attempts[0] > 5:
-                    # If I've failed 5 times in a row, then switch bins.
-                    print("Switching to the other bin after 5 consecutive failed attempts")
-                    attempts[0] = 0
-                    if mode == PlannerState.PICKING_FROM_X_BIN:
-                        state.get_mutable_abstract_state(int(
-                            self._mode_index)).set_value(
-                            PlannerState.PICKING_FROM_Y_BIN)
-                    else:
-                        state.get_mutable_abstract_state(int(
-                            self._mode_index)).set_value(
-                            PlannerState.PICKING_FROM_X_BIN)
-                    self.Plan(context, state)
-                    return
+        traj_X_G = context.get_abstract_state(int(self._traj_X_G_index)).get_value()
 
-                attempts[0] += 1
-                state.get_mutable_abstract_state(int(
-                    self._mode_index)).set_value(
-                    PlannerState.WAIT_FOR_OBJECTS_TO_SETTLE)
-                times = {"initial": current_time}
-                state.get_mutable_abstract_state(int(
-                    self._times_index)).set_value(times)
-                X_G = self.get_input_port(0).Eval(context)[int(
-                    self._gripper_body_index)]
-                state.get_mutable_abstract_state(int(
-                    self._traj_X_G_index)).set_value(PiecewisePose.MakeLinear([current_time, np.inf], [X_G, X_G]))
-                return
-
-        traj_X_G = context.get_abstract_state(int(
-            self._traj_X_G_index)).get_value()
         if not traj_X_G.is_time_in_range(current_time):
             self.Plan(context, state)
             return
@@ -274,8 +263,25 @@ class Planner(LeafSystem):
             self._traj_q_index)).set_value(q_traj)
 
     def Plan(self, context, state):
-        mode = copy(
-            state.get_mutable_abstract_state(int(self._mode_index)).get_value())
+        """
+        Seems like this function calculates the trajectory based on the mode we're in.
+        Then it sets the trajectory in the trajectory output port.
+        """
+
+        # sample k samples from the belief state
+        belief_state = self.histogram_filter.p[:]
+        x_samples = [np.argmax(self.histogram_filter.p)]
+        k = 1
+        while k < 15:
+            sample = np.random.choice(len(self.histogram_filter.p), 1, p=belief_state)
+            if sample > 0.5:
+                x_samples.append(sample)
+                k += 1
+
+        belief_states, u = self.create_plan(context, x_samples, self.x_g)
+        belief_states[0] = belief_state
+
+        mode = copy(state.get_mutable_abstract_state(int(self._mode_index)).get_value())
 
         X_G = {
             "initial":
@@ -304,33 +310,20 @@ class Planner(LeafSystem):
         assert not np.isinf(cost), "Could not find a valid grasp in either bin after 5 attempts"
         state.get_mutable_abstract_state(int(self._mode_index)).set_value(mode)
 
-        # TODO(russt): The randomness should come in through a random input
-        # port.
         if mode == PlannerState.PICKING_FROM_X_BIN:
             # Place in Y bin:
             X_G["place"] = RigidTransform(
-                RollPitchYaw(-np.pi / 2, 0, 0),
-                [rs.uniform(-.25, .15),
-                 rs.uniform(-.6, -.4), .3])
+                RollPitchYaw(-np.pi / 2, 0, 0), [rs.uniform(-.25, .15), rs.uniform(-.6, -.4), .3])
         else:
             # Place in X bin:
             X_G["place"] = RigidTransform(
-                RollPitchYaw(-np.pi / 2, 0, np.pi / 2),
-                [rs.uniform(.35, .65),
-                 rs.uniform(-.12, .28), .3])
+                RollPitchYaw(-np.pi / 2, 0, np.pi / 2), [rs.uniform(.35, .65), rs.uniform(-.12, .28), .3])
 
         X_G, times = MakeGripperFrames(X_G, t0=context.get_time())
         print(
             f"Planned {times['postplace'] - times['initial']} second trajectory in mode {mode} at time {context.get_time()}."
         )
-        state.get_mutable_abstract_state(int(
-            self._times_index)).set_value(times)
-
-        if False:  # Useful for debugging
-            AddMeshcatTriad(meshcat, "X_Oinitial", X_PT=X_O["initial"])
-            AddMeshcatTriad(meshcat, "X_Gprepick", X_PT=X_G["prepick"])
-            AddMeshcatTriad(meshcat, "X_Gpick", X_PT=X_G["pick"])
-            AddMeshcatTriad(meshcat, "X_Gplace", X_PT=X_G["place"])
+        state.get_mutable_abstract_state(int(self._times_index)).set_value(times)
 
         traj_X_G = MakeGripperPoseTrajectory(X_G, times)
         traj_wsg_command = MakeGripperCommandTrajectory(times)
@@ -341,20 +334,16 @@ class Planner(LeafSystem):
             self._traj_wsg_index)).set_value(traj_wsg_command)
 
     def start_time(self, context):
-        return context.get_abstract_state(
-            int(self._traj_X_G_index)).get_value().start_time()
+        return context.get_abstract_state(int(self._traj_X_G_index)).get_value().start_time()
 
     def end_time(self, context):
-        return context.get_abstract_state(
-            int(self._traj_X_G_index)).get_value().end_time()
+        return context.get_abstract_state(int(self._traj_X_G_index)).get_value().end_time()
 
     def CalcGripperPose(self, context, output):
         mode = context.get_abstract_state(int(self._mode_index)).get_value()
 
-        traj_X_G = context.get_abstract_state(int(
-            self._traj_X_G_index)).get_value()
-        if (traj_X_G.get_number_of_segments() > 0 and
-                traj_X_G.is_time_in_range(context.get_time())):
+        traj_X_G = context.get_abstract_state(int(self._traj_X_G_index)).get_value()
+        if traj_X_G.get_number_of_segments() > 0 and traj_X_G.is_time_in_range(context.get_time()):
             # Evaluate the trajectory at the current time, and write it to the
             # output port.
             output.set_value(
@@ -381,8 +370,7 @@ class Planner(LeafSystem):
             self._traj_wsg_index)).get_value()
         if (traj_wsg.get_number_of_segments() > 0 and
                 traj_wsg.is_time_in_range(context.get_time())):
-            # Evaluate the trajectory at the current time, and write it to the
-            # output port.
+            # Evaluate the trajectory at the current time, and write it to the output port.
             output.SetFromVector(traj_wsg.value(context.get_time()))
             return
 
@@ -466,7 +454,7 @@ def clutter_clearing_demo():
     X_WallGripper = gripper_frame.CalcPose(plant_context, wall_frame)
     X_BoxGripper = gripper_frame.CalcPose(plant_context, box_frame)
     dist_to_wall = X_WallGripper.translation()[0]
-    dist_to_box =  X_BoxGripper.translation()[0]
+    dist_to_box = X_BoxGripper.translation()[0]
     boxes_span = y_max - y_min
     step = boxes_span / N
     field = np.zeros((N,))

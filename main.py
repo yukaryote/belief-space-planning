@@ -2,16 +2,14 @@ import sys
 import numpy as np
 
 np.set_printoptions(threshold=sys.maxsize)
-from manipulation.scenarios import AddIiwaDifferentialIK
 from pydrake.all import (BasicVector, RollPitchYaw, ConstantVectorSource, DiagramBuilder,
-                         GenerateHtml, Integrator, JacobianWrtVariable,
+                         Integrator, JacobianWrtVariable,
                          LeafSystem, MathematicalProgram, MeshcatVisualizer,
-                         Simulator, SnoptSolver, Solve, StartMeshcat, eq, ge,
-                         le, RigidTransform, RenderCameraCore, CameraInfo, ClippingRange, DepthRange)
+                         Simulator, SnoptSolver, StartMeshcat, ge,
+                         le, RigidTransform)
 from directives import robot_directives
 from utils.make_station import MakeManipulationStationCustom
 from utils.add_bodies import add_boxes, BOX_SIZE, WALL_SIZE
-from utils.sqp import SolveSQP
 
 meshcat = StartMeshcat()
 

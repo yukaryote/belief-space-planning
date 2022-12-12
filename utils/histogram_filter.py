@@ -9,13 +9,13 @@ class HistogramFilter:
     move function takes in robot arm motion (y-axis value), returns p_bar for all bins
     sense function takes in the beam measurement (cm), returns p for all bins (final probability of some bin being true)
     """
-    def __init__(self, N, field, noise_std):
+    def __init__(self, N, field, noise_std, lower_bound, upper_bound):
         # N is the number of pins
         self.N = N
         # p is the probability distribution over the N bins
         self.p = np.ones((N,)) / N
         self.field = field
-        self.bin_size = (self.field[self.N - 1] - self.field[0]) / N
+        self.bin_size = (upper_bound - lower_bound) / (1.0 * N)
         self.noise_std = noise_std
 
     def calc_p_obs(self, x_idx, measurement):
