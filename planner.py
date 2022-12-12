@@ -6,7 +6,7 @@ import numpy as np
 from manipulation.scenarios import AddIiwaDifferentialIK
 from pydrake.all import (AbstractValue, RollPitchYaw, PiecewisePose, DiagramBuilder,
                          PiecewisePolynomial, InputPortIndex, LeafSystem, MathematicalProgram,
-                         MeshcatVisualizer, Simulator, RandomGenerator, Solve, StartMeshcat, eq, ge,
+                         MeshcatVisualizer, Simulator, Solve, StartMeshcat, eq, ge,
                          le, RigidTransform, PortSwitch)
 from pydrake.symbolic import Variable
 from manipulation.pick import MakeGripperFrames, MakeGripperPoseTrajectory, MakeGripperCommandTrajectory
@@ -15,12 +15,14 @@ from utils.make_station import MakeManipulationStationCustom
 from utils.add_bodies import BOX_SIZE, WALL_SIZE
 from utils.histogram_filter import HistogramFilter
 
+from scipy.special import kl_div
+import scipy.stats as stats
+
 np.set_printoptions(threshold=sys.maxsize)
 
 meshcat = StartMeshcat()
 
 rs = np.random.RandomState()  # this is for python
-generator = RandomGenerator(rs.randint(1000))  # this is for c++
 
 
 class PlannerState(Enum):
@@ -29,8 +31,9 @@ class PlannerState(Enum):
 
 
 class Planner(LeafSystem):
-    def __init__(self, plant, field, T=100, alpha=0.0085, N=10, noise_std=0.1, lower_bound=None, upper_bound=None):
+    def __init__(self, plant, field, x_g, T=100, alpha=0.0085, N=10, noise_std=0.1, lower_bound=None, upper_bound=None):
         LeafSystem.__init__(self)
+        self.time_step = plant.time_step
         self._gripper_body_index = plant.GetBodyByName("body").index()
         self.DeclareAbstractInputPort(
             "body_poses", AbstractValue.Make([RigidTransform()]))
@@ -84,6 +87,7 @@ class Planner(LeafSystem):
                 self.H[i] = 1
             elif prev > self.h[i]:
                 self.H[i] = -1
+            prev = self.h[i]
         self.Q = np.random.normal(loc=0, scale=noise_std)
         self.histogram_filter = HistogramFilter(N, field, noise_std)
         self.lower_bound = lower_bound
@@ -97,33 +101,33 @@ class Planner(LeafSystem):
 
         # Create decision variables
 
-        # u is 1-dim velocity in the y-axis
-        u = np.empty((1, self.T - 1), dtype=Variable)
-        # x is k-dim positions in the y-axis from our k samples
-        x = np.empty((1, K, self.T), dtype=Variable)
+        # u is T-dim velocity in the y-axis
+        u = np.empty((self.T - 1), dtype=Variable)
+        # x is kxT-dim positions in the y-axis from our k samples
+        x = np.empty((K, self.T), dtype=Variable)
         for t in range(self.T - 1):
-            u[:, t] = prog.NewContinuousVariables(1, 'u' + str(t))
+            u[t] = prog.NewContinuousVariables(1, 'u' + str(t))
             for k in range(K):
-                x[:, k, t] = prog.NewContinuousVariables(1, 'x' + str(k) + str(t))
+                x[k, t] = prog.NewContinuousVariables(1, 'x' + str(k) + str(t))
 
         for k in range(K):
-            x[:, k, self.T - 1] = prog.NewContinuousVariables(1, 'x' + str(k) + str(self.T))
+            x[k, self.T - 1] = prog.NewContinuousVariables(1, 'x' + str(k) + str(self.T))
 
         # Add costs and constraints
         x0 = x_samples
         J = np.mean([self.calc_weights(x_samples[0], k, x_samples, u, self.T) ** 2 for k in range(K)])
-        cost2 = self.alpha * sum([np.linalg.norm(u[:, t]) ** 2 for t in range(self.T)])
+        cost2 = self.alpha * sum([np.linalg.norm(u[t]) ** 2 for t in range(self.T)])
         prog.AddCost(J + cost2)
-        prog.AddBoundingBoxConstraint(x0, x0, x[:, :, 0])
+        prog.AddBoundingBoxConstraint(x0, x0, x[:, 0])
         for t in range(self.T - 1):
             for k in range(K):
                 w_next = self.calc_weights(x_samples[0], k, x_samples, u, t + 1)
                 w_cur = self.calc_weights(x_samples[0], k, x_samples, u, t)
-                prog.AddConstraint(eq(x[:, k, t + 1], self.f(x[:, k, t], u[:, t])))
-                prog.AddConstraint(eq(w_next, w_cur * np.e ** self.phi(x[:, k, t], x_samples[0])))
-                prog.AddBoundingBoxConstraint(x[:, k, t], self.lower_bound, self.upper_bound)
+                prog.AddConstraint(eq(x[k, t + 1], self.f(x[k, t], u[t])))
+                prog.AddConstraint(eq(w_next, w_cur * np.e ** self.phi(x[k, t], x_samples[0])))
+                prog.AddBoundingBoxConstraint(x[k, t], self.lower_bound, self.upper_bound)
         if x_g is not None:
-            prog.AddBoundingBoxConstraint(x_g, x_g, x[:, 0, self.T - 1])
+            prog.AddConstraint(eq(x[0, self.T - 1], x_g))
 
         result = Solve(prog)
 
@@ -141,8 +145,8 @@ class Planner(LeafSystem):
         """
         Weighting function
         """
-        return 1 / 2 * (self.h[x] - self.h[y].T) @ np.linalg.inv(2 * self.Q +
-                                                                 self.H[x] @ self.H[x].T + self.H[y] @ self.H[y].T) @ (
+        return 1 / 2 * (self.h[x] - self.h[y]) * 1 / (2 * self.Q +
+                       self.H[x] * self.H[x] + self.H[y] * self.H[y]) * (
                        self.h[x] - self.h[y])
 
     def f(self, x, u):
@@ -150,7 +154,7 @@ class Planner(LeafSystem):
         Returns next state if we are in state x and take action u
         0.001 is the timestep of the system
         """
-        return x + u * 0.001
+        return x + u * self.time_step
 
     def F(self, x, u):
         """
@@ -163,9 +167,14 @@ class Planner(LeafSystem):
 
     def theta_cap(self, belief_state, r, x_g):
         """
-        Probability that we are in a ball of radius r around x_g
+        Probability that we are in a ball of radius r around x_g.
+        Amounts to calculating the CDF difference.
         """
-        return 0
+        cdf = np.cumsum(belief_state)
+        # calculate which bin x_g +/- r is in.
+        lower_bound = int((x_g - r - self.histogram_filter.field[0]) / self.histogram_filter.bin_size)
+        upper_bound = int((x_g + r - self.histogram_filter.field[0]) / self.histogram_filter.bin_size)
+        return cdf[lower_bound] - cdf[upper_bound]
 
     def J(self, x_samples, u, t):
         return np.mean([self.calc_weights(x_samples[0], k, x_samples, u, t) ** 2 for k in range(len(x_samples))])
@@ -203,17 +212,14 @@ class Planner(LeafSystem):
             return
 
         # If we are between pick and place and the gripper is closed, then
-        # we've missed or dropped the object.  Time to replan.
+        # we've missed or dropped the object. Time to replan.
         if times["postpick"] < current_time < times["preplace"]:
             wsg_state = self.get_input_port(self._wsg_state_index).Eval(context)
             if wsg_state[0] < 0.01:
-                attempts = state.get_mutable_discrete_state(
-                    int(self._attempts_index)).get_mutable_value()
+                attempts = state.get_mutable_discrete_state(int(self._attempts_index)).get_mutable_value()
                 if attempts[0] > 5:
                     # If I've failed 5 times in a row, then switch bins.
-                    print(
-                        "Switching to the other bin after 5 consecutive failed attempts"
-                    )
+                    print("Switching to the other bin after 5 consecutive failed attempts")
                     attempts[0] = 0
                     if mode == PlannerState.PICKING_FROM_X_BIN:
                         state.get_mutable_abstract_state(int(
@@ -245,17 +251,10 @@ class Planner(LeafSystem):
             self.Plan(context, state)
             return
 
-        X_G = self.get_input_port(0).Eval(context)[int(
-            self._gripper_body_index)]
-        # if current_time > 10 and current_time < 12:
-        #    self.GoHome(context, state)
-        #    return
-        if np.linalg.norm(
-                traj_X_G.GetPose(current_time).translation()
-                - X_G.translation()) > 0.2:
-            # If my trajectory tracking has gone this wrong, then I'd better
-            # stop and replan.  TODO(russt): Go home, in joint coordinates,
-            # instead.
+        X_G = self.get_input_port(0).Eval(context)[int(self._gripper_body_index)]
+
+        if np.linalg.norm(traj_X_G.GetPose(current_time).translation() - X_G.translation()) > 0.2:
+            # If my trajectory tracking has gone this wrong, then I'd better stop and re-plan.
             self.GoHome(context, state)
             return
 
@@ -302,8 +301,7 @@ class Planner(LeafSystem):
             if not np.isinf(cost):
                 break
 
-        assert not np.isinf(
-            cost), "Could not find a valid grasp in either bin after 5 attempts"
+        assert not np.isinf(cost), "Could not find a valid grasp in either bin after 5 attempts"
         state.get_mutable_abstract_state(int(self._mode_index)).set_value(mode)
 
         # TODO(russt): The randomness should come in through a random input
@@ -457,11 +455,11 @@ def clutter_clearing_demo():
     box2_y = X_WorldBox2.translation()[1]
     y_min = box1_y - BOX_SIZE[1] / 2
     y_max = box2_y + BOX_SIZE[1] / 2
-    lower_bound = [-100, y_min, -100]
-    upper_bound = [100, y_max, 100]
+    lower_bound = y_min
+    upper_bound = y_max
 
     # make the observation field
-    N = 10
+    N = 100
     gripper_frame = plant.GetFrameByName("body")
     wall_frame = plant.GetFrameByName("wall")
     box_frame = plant.GetFrameByName("box_1")
@@ -478,7 +476,7 @@ def clutter_clearing_demo():
         else:
             field[i] = dist_to_box
 
-    planner = builder.AddSystem(Planner(plant, field, N=N, lower_bound=lower_bound, upper_bound=upper_bound))
+    planner = builder.AddSystem(Planner(plant, field, 0., N=N, lower_bound=lower_bound, upper_bound=upper_bound))
     builder.Connect(station.GetOutputPort("body_poses"),
                     planner.GetInputPort("body_poses"))
     builder.Connect(station.GetOutputPort("camera_depth_image"),
@@ -518,7 +516,6 @@ def clutter_clearing_demo():
     diagram = builder.Build()
 
     simulator = Simulator(diagram)
-    context = simulator.get_context()
 
     simulator.AdvanceTo(0.1)
     meshcat.Flush()  # Wait for the large object meshes to get to meshcat.
