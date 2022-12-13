@@ -22,7 +22,7 @@ def H(x):
 
 
 class SolveSQP:
-    def __init__(self, x_g, T=10, alpha=0.0085, N=10, noise_std=0.025, r=0.05):
+    def __init__(self, x_g, x_start, T=10, alpha=0.0085, N=10, noise_std=0.025, r=0.025):
         self.N = N
         self.T = T
         self.alpha = alpha
@@ -58,7 +58,7 @@ class SolveSQP:
 
         # initialize state at a random location along the y-axis
         # self.x = np.random.uniform(self.lower_bound, self.upper_bound)
-        self.x = -0.1
+        self.x = x_start
         self.time_step = 0.02
 
         self.p_graph = []
@@ -96,7 +96,6 @@ class SolveSQP:
                 prog.AddConstraint(eq(x[k, 0], x_samples[k]))
                 prog.AddBoundingBoxConstraint(self.lower_bound, self.upper_bound, x[k, t][0])
         if use_goal:
-            print("using goal")
             prog.AddConstraint(eq(x[0, self.T - 1], self.x_g))
 
         init_guess = np.zeros((2 * K * self.T + self.T - 1,))
@@ -174,7 +173,6 @@ class SolveSQP:
             plt.show()
             """
         if self.theta_cap(belief_state) <= omega:
-            print("creating new plan")
             u = self.dirtran(x_samples)
             belief_states[0] = belief_state
             self.histogram_filter.reset()
@@ -193,7 +191,6 @@ class SolveSQP:
                 if sample[0] > thresh:
                     x_samples.append(self.y_range[sample[0]])
                     k += 1
-            print("hypothesis", x_samples[0])
 
             belief_states, u = self.create_plan(x_samples, omega)
             belief_states[0] = belief_state
@@ -205,7 +202,6 @@ class SolveSQP:
                 self.x = self.f(self.x, u_t)
                 self.x_graph.append(self.x)
                 # choose correct bin index for state x
-                # print("x, x_idx", self.x, np.digitize(self.x, self.y_range) - 1)
                 z_next = self.h[max(np.digitize(self.x, self.y_range) - 1, 0)]
                 belief_state = self.histogram_filter.update(u_t, z_next)
                 self.p_graph.append(belief_state)
@@ -215,20 +211,56 @@ class SolveSQP:
                     break
                 t_break += 1
             belief_state = belief_states[t_break]
+        return self.x_graph
 
 
 if __name__ == "__main__":
-    sqp = SolveSQP(0.)
+    sqp = SolveSQP(0., -0.1)
     sqp.re_plan()
+    """
+    lower_bound = -BOX_SIZE[1] - GAP / 2
+    upper_bound = BOX_SIZE[1] + GAP / 2
+    n = 10
+    trials = 100
+
+    # y_range is the list of bin edges
+    y_range = np.linspace(lower_bound, upper_bound, n, endpoint=False)
+
+    print(sqp.x)
     plt.title("End effector trajectory (horizon T=10)")
     plt.xlabel("time")
     plt.ylabel("end effector position along y axis")
-    plt.plot(np.linspace(0, len(sqp.x_graph), len(sqp.x_graph)), sqp.x_graph)
+    plt.plot(np.linspace(0, len(sqp.x_graph), len(sqp.x_graph), endpoint=False), sqp.x_graph)
     plt.show()
+
+    plt.title("Belief states over time (horizon T=10)")
+    plt.ylabel("end effector position along y axis")
+    plt.xlabel("probability")
     alpha_step = 1./len(sqp.p_graph)
     for i in range(len(sqp.p_graph)):
-        plt.title("Belief states over time (horizon T=10)")
-        plt.xlabel("end effector position along y axis")
-        plt.ylabel("probability")
-        plt.plot(sqp.y_range, sqp.p_graph[i], color="blue", alpha=alpha_step*i)
+        plt.plot(np.linspace(0, len(sqp.y_range), len(sqp.y_range), endpoint=False), sqp.p_graph[i], color="blue", alpha = alpha_step * i)
     plt.show()
+
+    success = np.zeros_like(y_range)
+    for i in range(len(y_range)):
+        failures = 0
+        for t in range(trials):
+            sqp = SolveSQP(0., y_range[i])
+            try:
+                sqp.re_plan()
+            except:
+                print("optimization failed")
+                failures += 1
+                break
+            if not(-0.005 <= sqp.x < 0.005):
+                failures += 1
+            del sqp
+        success[i] = (trials - failures)/(1. * trials)
+
+    plt.title("Success rate of starting end effector positions with goal position of x = 0.")
+    plt.xlabel("starting end effector position")
+    plt.ylabel("success rate")
+    plt.plot(y_range, success)
+    plt.show()
+    print("success rate", np.mean(success))
+    """

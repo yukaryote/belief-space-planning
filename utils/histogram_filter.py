@@ -30,8 +30,6 @@ class HistogramFilter:
         x_max = self.field[x_idx] + self.bin_size / 2
         p_min = stats.norm.cdf(x_min, measurement, scale=self.noise_std)
         p_max = stats.norm.cdf(x_max, measurement, scale=self.noise_std)
-        # if measurement > 0.05:
-        #     print("calc p obs", x_idx, measurement, p_max - p_min)
         return p_max - p_min
 
     def move(self, motion):

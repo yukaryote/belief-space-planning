@@ -25,7 +25,7 @@ plt.axvline(x=0, c="black")
 plt.axhline(y=0, c="black")
 plt.plot(y_range, h)
 plt.show()
-'''
+
 plt.title(r"$\bar{h}(x)$")
 plt.xlabel("x (end effector position)")
 plt.ylabel("h(x) (distance from environment to end effector)")
@@ -33,3 +33,4 @@ plt.axvline(x=0, c="black")
 plt.axhline(y=0, c="black")
 plt.plot(y_range, h_bar)
 plt.show()
+'''
