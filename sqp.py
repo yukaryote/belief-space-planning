@@ -14,10 +14,19 @@ from utils.add_bodies import BOX_SIZE, GAP
 
 
 def h(x):
-    return 2 * 0.1 / np.pi * arctan(sin(2. * np.pi * 5. * x + 1./4 * np.pi/0.1) / 0.001) + 0.15
+    c = 0.5
+    a = -0.025
+    b = 0.025
+    A = 0.02
+    L = 1000
+    z = 3. / 4 + (b - a) / (2 * c)
+    h = 0.05 + -A * c / (a - b) * \
+           1. / (1 + pow(np.e, L * (np.sin(2 * np.pi * ((x - a) / c + z)) - np.sin(2 * np.pi * z))))
+    return h
 
 
 def H(x):
+    # print(h(x).Differentiate(x))
     return h(x).Differentiate(x)
 
 
@@ -43,16 +52,7 @@ class SolveSQP:
                 self.h[i] = 0.25
             else:
                 self.h[i] = 0.05
-        
-        self.H = np.zeros_like(self.h)
-        prev = self.h[0]
-        # h is a square wave, so its derivative is two impulses of opposite sign
-        for i in range(len(self.h)):
-            if prev < self.h[i]:
-                self.H[i] = 1
-            elif prev > self.h[i]:
-                self.H[i] = -1
-        self.H = np.gradient(self.h, x)
+
         self.Q = np.random.normal(loc=0, scale=noise_std)
         self.histogram_filter = HistogramFilter(self.N, self.h, noise_std, 0.01, self.lower_bound, self.upper_bound)
 
@@ -84,7 +84,7 @@ class SolveSQP:
                 u[t] = prog.NewContinuousVariables(1, 'u' + str(t))
 
         # Add costs and constraints
-        J = 1./K * np.sum(w[:, self.T - 1].T @ w[:, self.T - 1])
+        J = 1. / K * np.sum(w[:, self.T - 1].T @ w[:, self.T - 1])
         action_cost = self.alpha * (u.T @ u)[0][0]
         prog.AddCost(J + action_cost)
         for t in range(self.T - 1):
@@ -158,13 +158,14 @@ class SolveSQP:
         plt.show()
         """
         u = self.dirtran(x_samples, use_goal=True)
-        belief_states = np.ndarray(shape=(self.T, belief_state.shape[0], ))
+        belief_states = np.ndarray(shape=(self.T, belief_state.shape[0],))
         belief_states[0] = belief_state
         x_T = np.zeros((self.T,))
         x_T[0] = x_samples[0]
         for t in range(self.T - 1):
             x_T[t + 1] = self.f(x_T[t], u[t])
-            belief_states[t + 1] = self.histogram_filter.update(u[t], self.h[max(np.digitize(x_T[t+1], self.y_range) - 1, 0)])
+            belief_states[t + 1] = self.histogram_filter.update(u[t], self.h[
+                max(np.digitize(x_T[t + 1], self.y_range) - 1, 0)])
             """
             plt.title("Belief state after measurement")
             plt.xlabel("end effector position along y axis")
@@ -177,7 +178,8 @@ class SolveSQP:
             belief_states[0] = belief_state
             self.histogram_filter.reset()
             for t in range(self.T - 1):
-                belief_states[t + 1] = self.histogram_filter.update(u[t], self.h[max(np.digitize(x_T[t+1], self.y_range) - 1, 0)])
+                belief_states[t + 1] = self.histogram_filter.update(u[t], self.h[
+                    max(np.digitize(x_T[t + 1], self.y_range) - 1, 0)])
                 x_T[t + 1] = self.f(x_T[t], u[t])
         return belief_states, u
 
@@ -217,7 +219,7 @@ class SolveSQP:
 if __name__ == "__main__":
     sqp = SolveSQP(0., -0.1)
     sqp.re_plan()
-    """
+
     lower_bound = -BOX_SIZE[1] - GAP / 2
     upper_bound = BOX_SIZE[1] + GAP / 2
     n = 10
@@ -240,7 +242,7 @@ if __name__ == "__main__":
     for i in range(len(sqp.p_graph)):
         plt.plot(np.linspace(0, len(sqp.y_range), len(sqp.y_range), endpoint=False), sqp.p_graph[i], color="blue", alpha = alpha_step * i)
     plt.show()
-
+    """
     success = np.zeros_like(y_range)
     for i in range(len(y_range)):
         failures = 0
