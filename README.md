@@ -2,7 +2,7 @@
 Implementation of ["Efficient planning in non-Gaussian belief spaces and its application to robot grasping"](https://people.csail.mit.edu/rplatt/papers/platt_isrr2011_6.pdf). 
 
 ## Installation
-Make a virtualenv. Then run 
+Make a virtualenv with Python 3.8 or newer. Then run 
 ```
 pip install -r requirements.txt
 ```
